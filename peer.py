@@ -1,94 +1,109 @@
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-p',
-        '--peer',
-        action='append',
-        default=[],
-        dest='peers',
-        help='initial peers to connect to',
-        metavar='PEER',
-        type=str,
-    )
-    parser.add_argument(
-        '--port',
-        default=5555,
-        help='port to listen on',
-        type=int,
-    )
-    args = parser.parse_args()
+from typing import Callable, List, Tuple
+import asyncio
+import json
 
-    import asyncio
-    import json
+def json_encode(data):
+    return json.dumps(data).encode('utf-8')
 
-    peers = []
+def json_decode(data):
+    return json.loads(data)
 
-    class DiscoveryProtocol(asyncio.DatagramProtocol):
-        def connection_made(self, transport):
-            self.transport = transport
+class Protocol(asyncio.DatagramProtocol):
+    def __init__(self, on_connect, handler):
+        self.on_connect = on_connect
+        self.handler = handler
 
-            for peer in args.peers:
-                peers.append(('127.0.0.1', int(peer)))
+    def connection_made(self, transport):
+        self.transport = transport
+        self.on_connect(self.transport)
 
-            add_peer_msg = json.dumps({'action': 'add-peer'}).encode('utf-8')
-            request_peer_msg = json.dumps({'action': 'request-peers'}).encode('utf-8')
+    def datagram_received(self, data, addr):
+        self.handler(self.transport, addr, data)
 
-            for peer in peers:
-                self.transport.sendto(add_peer_msg, peer)
-                self.transport.sendto(request_peer_msg, peer)
+    def __call__(self):
+        return self
 
-        def datagram_received(self, data, addr):
-            try:
-                data = json.loads(data)
-            except:
-                print('Invalid message received from {}'.format(addr))
-                return
+def send(transport, address, data):
+    data = json_encode(data)
+    print('Sending to {}: {}'.format(address, data))
+    transport.sendto(data, address)
 
-            if not isinstance(data, dict):
-                print('Invalid message received from {}'.format(addr))
-                return
+class UDPSwarm(object):
+    def __init__(self, port:int):
+        self.port = port
+        self.peers = []
 
-            action = data.get('action')
+    def add_peer(self, peer):
+        host, port = peer
+        if port == self.port:
+            return False
 
-            if not action:
-                print('Invalid message received from {}'.format(addr))
-                return
+        if peer in self.peers:
+            return False
 
-            if action == 'add-peer':
-                peers.append(addr)
+        self.peers.append(peer)
+        print('Added peer {}'.format(peer))
+        return True
 
-            elif action == 'request-peers':
-                print('request-peers')
-                self.transport.sendto(
-                    json.dumps({
-                        'action': 'respond-peers',
-                        'peers': ['{}:{}'.format(*peer) for peer in peers],
-                    }).encode('utf-8'),
-                    addr,
-                )
+    def message_handler(self, transport, addr, data):
+        try:
+            data = json_decode(data)
+        except:
+            print('Invalid message received from {}'.format(addr))
+            return
 
-            elif action == 'respond-peers':
-                print('respond-peers')
-                print(data)
-                for p in data.get('peers',[]):
-                    phost, pport = p.split(':')
-                    pport = int(pport)
-                    peer = (phost, pport)
-                    if not peer in peers:
-                        peers.append(peer)
-                        print('Added peer {}'.format(peer))
-                        add_peer_msg = json.dumps({'action': 'add-peer'}).encode('utf-8')
-                        self.transport.sendto(add_peer_msg, peer)
+        if not isinstance(data, dict):
+            print('Invalid message received from {}'.format(addr))
+            return
 
-            else:
-                print('Unknown action {}'.format(action))
+        print('Received from {}: {}'.format(addr, data))
 
-    loop = asyncio.get_event_loop()
-    t = loop.create_datagram_endpoint(
-        DiscoveryProtocol,
-        local_addr=('0.0.0.0', args.port),
-    )
-    loop.run_until_complete(t)
-    print('Running on port {}'.format(args.port))
-    loop.run_forever()
+        action = data.get('action')
+
+        if not action:
+            print('Invalid message received from {}'.format(addr))
+            return
+
+        if action == 'add-peer':
+            self.add_peer(addr)
+
+        elif action == 'request-peers':
+            transport.sendto(
+                json_encode({
+                    'action': 'respond-peers',
+                    'peers': ['{}:{}'.format(*peer) for peer in self.peers],
+                }),
+                addr,
+            )
+
+        elif action == 'respond-peers':
+            for p in data.get('peers',[]):
+                phost, pport = p.split(':')
+                pport = int(pport)
+                peer = (phost, pport)
+
+                was_added = self.add_peer(peer)
+                if was_added:
+                    send(transport, peer, {'action': 'add-peer'})
+
+        else:
+            print('Unknown action {}'.format(action))
+
+        print('Peers: {}'.format(self.peers))
+
+    def run(self, init_peers:List[Tuple[str, int]]) -> None:
+        def on_connect(transport):
+            for peer in init_peers:
+                print('Attempting to add peer {}'.format(peer))
+                send(transport, peer, {'action': 'add-peer'})
+                send(transport, peer, {'action': 'request-peers'})
+                self.add_peer(peer)
+
+        loop = asyncio.get_event_loop()
+        t = loop.create_datagram_endpoint(
+            Protocol(on_connect, self.message_handler),
+            local_addr=('0.0.0.0', self.port),
+        )
+        loop.run_until_complete(t)
+        print('Running on port {}'.format(self.port))
+        loop.run_forever()
