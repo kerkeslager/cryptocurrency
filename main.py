@@ -1,4 +1,8 @@
 import argparse
+import asyncio
+
+import protocol
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     '-p',
@@ -12,13 +16,16 @@ parser.add_argument(
 )
 parser.add_argument(
     '--port',
-    default=5555,
+    default=555,
     help='port to listen on',
     type=int,
 )
 args = parser.parse_args()
 
-import peer
-peer.UDPSwarm(port=args.port).run(
-    init_peers=[('127.0.0.1', int(peer_port)) for peer_port in args.peers],
+loop = asyncio.get_event_loop()
+udp_listener = loop.create_datagram_endpoint(
+    protocol.EchoProtocol(),
+    local_addr=('0.0.0.0', args.port),
 )
+loop.run_until_complete(udp_listener)
+loop.run_forever()
