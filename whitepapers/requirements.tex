@@ -1,0 +1,31 @@
+\documentclass[12pt,letterpaper]{article}
+\usepackage[utf8]{inputenc}
+
+\title{Requirements for a digital currency}
+\author{David Kerkeslager}
+\date{}
+
+\begin{document}
+
+\begin{titlepage}
+\maketitle
+\end{titlepage}
+
+\section{Inflation as a necessary component of currency}
+
+\section{Inclusion fees considered harmful}
+In both proof of stake and proof of work, the provers are incentivized
+with inclusion fees. However, as the value of the currency rises and the
+network becomes congested, these fees rise to the point where the
+cryptocurrency becomes unusable as a currency. Once this process is started
+it cannot be stopped, because provers are incentivized to refuse to lower
+inclusion fees. This process continues until provers kill the golden goose.
+In the case of proof of work, provers (miners) simply move to another
+blockchain, as they have no investment in the coin itself. In the case of proof
+of stake, provers (stakers) attempt to settle at a level of fees such that fee
+\times inclusions is maximized: too high a fee and fewer users will submit
+inclusions, while if the fee is any lower, stakers are under-profiting. While
+this has a certain efficency to it, it results in a system which serves provers
+rather than users.
+
+\end{document}
