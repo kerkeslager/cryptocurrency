@@ -50,6 +50,20 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
         self.encoder = encoder
         self.peers = {}
 
+    def connection_made(self, transport):
+        super().connection_made(transport)
+
+        for peer in self.peers:
+            self._add_peer(peer)
+            print('Connecting to peer {}'.format(peer))
+            self.send(
+                {
+                    'action': 'peer:add',
+                    'mutual': True,
+                },
+                peer,
+            )
+
     def receive(self, message:M, sender:Tuple[str,int]) -> None:
         action = message.get('action')
 
@@ -60,10 +74,7 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
             mutual_p = message.get('mutual?', False)
 
             if not sender in self.peers:
-                self.peers[sender] = {
-                    'mutual?': mutual_p,
-                    'seen-utc': datetime.now(timezone.utc),
-                }
+                self._add_peer(sender, mutual_p)
 
             self.send({ 'action': 'peer:ack-add', 'added?': True }, sender)
 
@@ -83,6 +94,13 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
         if action == 'peer:ack-beat':
             # The purpose of this is to set seen-utc, which is already done above
             pass
+
+    def _add_peer(self, peer, mutual_p=False):
+        print('Adding peer {}'.format(peer))
+        self.peers[peer] = {
+            'mutual?': mutual_p,
+            'seen-utc': datetime.now(timezone.utc),
+        }
 
 if __name__ == '__main__':
     import asyncio
