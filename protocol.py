@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from datetime import datetime, timezone
-from typing import Generic, Tuple, TypeVar
+from typing import cast, Generic, Tuple, TypeVar
 import asyncio
 
 import encoders
@@ -8,11 +8,14 @@ import encoders
 M = TypeVar('M')
 
 class BaseDatagramProtocol(asyncio.DatagramProtocol, Generic[M]):
+    def __init__(self, encoder: encoders.BaseEncoder[M]):
+        self.encoder = encoder
+
     def __call__(self):
         return self
 
-    def connection_made(self, transport: asyncio.DatagramTransport) -> None:
-        self._transport = transport
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self._transport = cast(asyncio.DatagramTransport, transport)
 
     def datagram_received(self, data:bytes, sender:Tuple[str,int]) -> None:
         message = self.get_encoder().decode(data)
@@ -30,14 +33,6 @@ class BaseDatagramProtocol(asyncio.DatagramProtocol, Generic[M]):
         self._transport.sendto(data, recipient)
 
     def get_encoder(self) -> encoders.BaseEncoder[M]:
-        if not hasattr(self, 'encoder'):
-            raise NotImplementedError(
-                'Must implement {} or {}'.format(
-                    self.__class__.__name__ + '.encoder',
-                    self.__class__.__name__ + '.get_encoder()'
-                ),
-            )
-
         return self.encoder
 
     @abstractmethod
@@ -46,15 +41,13 @@ class BaseDatagramProtocol(asyncio.DatagramProtocol, Generic[M]):
 
 class PeerProtocol(BaseDatagramProtocol[dict]):
     def __init__(self, encoder):
-        super().__init__()
-        self.encoder = encoder
+        super().__init__(encoder)
         self.peers = {}
 
-    def connection_made(self, transport):
+    def connection_made(self, transport:asyncio.BaseTransport):
         super().connection_made(transport)
 
         for peer in self.peers:
-            self._add_peer(peer)
             print('Connecting to peer {}'.format(peer))
             self.send(
                 {
@@ -64,7 +57,7 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
                 peer,
             )
 
-    def receive(self, message:M, sender:Tuple[str,int]) -> None:
+    def receive(self, message:dict, sender:Tuple[str,int]) -> None:
         action = message.get('action')
 
         if not action:
@@ -74,7 +67,7 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
             mutual_p = message.get('mutual?', False)
 
             if not sender in self.peers:
-                self._add_peer(sender, mutual_p)
+                self.add_peer(sender, mutual_p)
 
             self.send({ 'action': 'peer:ack-add', 'added?': True }, sender)
 
@@ -95,7 +88,7 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
             # The purpose of this is to set seen-utc, which is already done above
             pass
 
-    def _add_peer(self, peer, mutual_p=False):
+    def add_peer(self, peer:Tuple[str,int], mutual_p:bool=False):
         print('Adding peer {}'.format(peer))
         self.peers[peer] = {
             'mutual?': mutual_p,
