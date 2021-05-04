@@ -29,13 +29,18 @@ for peer in args.peers:
     host, port = peer.split(':')
     port = int(port)
 
-    p.peers[(host, port)] = {}
+    p.add_peer((host, port))
 
 loop = asyncio.get_event_loop()
-udp_listener = loop.create_datagram_endpoint(
-    p,
-    local_addr=('0.0.0.0', args.port),
-)
-loop.run_until_complete(udp_listener)
-print('Listening on port {}'.format(args.port))
-loop.run_forever()
+
+try:
+    udp_listener = loop.create_datagram_endpoint(
+        p,
+        local_addr=('0.0.0.0', args.port),
+    )
+    loop.run_until_complete(udp_listener)
+    print('Listening on port {}'.format(args.port))
+    loop.run_forever()
+
+finally:
+    loop.close()

@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import cast, Generic, Tuple, TypeVar
 import asyncio
 
@@ -56,6 +56,33 @@ class PeerProtocol(BaseDatagramProtocol[dict]):
                 },
                 peer,
             )
+
+        asyncio.ensure_future(self.heartbeat())
+
+    async def heartbeat(self):
+        while True:
+            await asyncio.sleep(1)
+
+            now = datetime.now(timezone.utc)
+
+            print('Sending heartbeat to {} peers'.format(len(self.peers)))
+
+            lost_peers = []
+
+            for peer in self.peers:
+                last_seen = self.peers[peer].get('seen-utc')
+
+                if not last_seen:
+                    print('No last seen')
+                    continue
+                elif last_seen + timedelta(seconds=10) < now:
+                    lost_peers.append(peer)
+                elif last_seen + timedelta(seconds=1) < now:
+                    self.send({'action': 'peer:beat'}, peer)
+
+            for peer in lost_peers:
+                print('Lost peer {}'.format(peer))
+                del self.peers[peer]
 
     def receive(self, message:dict, sender:Tuple[str,int]) -> None:
         action = message.get('action')
