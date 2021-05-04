@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from datetime import datetime, timezone
 from typing import Generic, Tuple, TypeVar
 import asyncio
 
@@ -28,7 +29,7 @@ class BaseDatagramProtocol(asyncio.DatagramProtocol, Generic[M]):
         data = self.get_encoder().encode(message)
         self._transport.sendto(data, recipient)
 
-    def get_encoder(self):
+    def get_encoder(self) -> encoders.BaseEncoder[M]:
         if not hasattr(self, 'encoder'):
             raise NotImplementedError(
                 'Must implement {} or {}'.format(
@@ -43,12 +44,54 @@ class BaseDatagramProtocol(asyncio.DatagramProtocol, Generic[M]):
     def receive(self, message:M, sender:Tuple[str,int]) -> None:
         raise NotImplementedError(self.__class__.__name__ + '.receive')
 
+class PeerProtocol(BaseDatagramProtocol[dict]):
+    def __init__(self, encoder):
+        super().__init__()
+        self.encoder = encoder
+        self.peers = {}
+
+    def receive(self, message:M, sender:Tuple[str,int]) -> None:
+        action = message.get('action')
+
+        if not action:
+            return
+
+        if action == 'peer:add':
+            mutual_p = message.get('mutual?', False)
+
+            if not sender in self.peers:
+                self.peers[sender] = {
+                    'mutual?': mutual_p,
+                    'seen-utc': datetime.now(timezone.utc),
+                }
+
+            self.send({ 'action': 'peer:ack-add', 'added?': True }, sender)
+
+        if sender in self.peers:
+            self.peers[sender]['seen-utc'] = datetime.now(timezone.utc)
+        else:
+            return
+
+        if action == 'peer:ack-add':
+            added_p = message.get('added?', False)
+
+            self.peers[sender]['mutual?'] = added_p
+
+        if action == 'peer:beat':
+            self.send({ 'action': 'peer:ack-beat'}, sender)
+
+        if action == 'peer:ack-beat':
+            # The purpose of this is to set seen-utc, which is already done above
+            pass
+
 if __name__ == '__main__':
     import asyncio
     import json
     import socket
     import unittest
     from unittest.mock import Mock
+
+    import encoders
 
     class BaseDatagramProtocolTests(unittest.TestCase):
         def test_call_returns_self(self):
@@ -115,5 +158,158 @@ if __name__ == '__main__':
 
             encoder.decode.assert_called_with(encoded_message)
             recorder.record.assert_called_with(decoded_message, message_source)
+
+    class PeerProtocolTests(unittest.TestCase):
+        def setUp(self):
+            self.peer_address = ('0.0.0.0', 555)
+
+        # TODO Make these tests test the calling of send() rather than transport.sendto()
+        def test_if_no_action_does_not_respond(self):
+            encoder = Mock()
+            transport = Mock()
+
+            p = PeerProtocol(encoder)
+            p.connection_made(transport)
+            p.receive({}, ('0.0.0.0', 555))
+
+            transport.sendto.assert_not_called()
+
+        def test_peer_add_responds_with_added_true(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.receive({'action': 'peer:add'}, ('0.0.0.0', 555))
+
+            transport.sendto.assert_called_once_with(
+                b'{"action":"peer:ack-add","added?":true}',
+                ('0.0.0.0', 555),
+            )
+
+        def test_peer_add_adds_peer(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.receive({'action': 'peer:add'}, ('0.0.0.0', 555))
+
+            assert ('0.0.0.0', 555) in p.peers
+
+        def test_peer_add_sets_seen_utc(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.receive({'action': 'peer:add'}, ('0.0.0.0', 555))
+
+            assert p.peers[('0.0.0.0', 555)]['seen-utc']
+
+        def test_if_not_peer_ack_add_does_nothing(self):
+            # TODO Don't set the peer directly
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.receive({'action': 'peer:ack-add', 'added?': True}, ('0.0.0.0', 555))
+
+            assert ('0.0.0.0', 555) not in p.peers
+
+        def test_ack_add_sets_peer_to_mutual_if_added_p_true(self):
+            # TODO Don't set the peer directly
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.peers[('0.0.0.0', 555)] = {
+                'mutual?': False,
+            }
+            p.receive({'action': 'peer:ack-add', 'added?': True}, ('0.0.0.0', 555))
+
+            assert p.peers[('0.0.0.0', 555)]['mutual?']
+
+        def test_ack_add_does_not_set_peer_to_mutual_if_added_p_false(self):
+            # TODO Don't set the peer directly
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.peers[('0.0.0.0', 555)] = {
+                'mutual?': False,
+            }
+            p.receive({'action': 'peer:ack-add', 'added?': False}, ('0.0.0.0', 555))
+
+            assert p.peers[('0.0.0.0', 555)]['mutual?'] is False
+
+        def test_ack_add_sets_seen_utc(self):
+            # TODO Don't set the peer directly
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.peers[('0.0.0.0', 555)] = {
+                'mutual?': False,
+            }
+            p.receive({'action': 'peer:ack-add', 'added?': False}, ('0.0.0.0', 555))
+
+            assert p.peers[('0.0.0.0', 555)]['seen-utc']
+
+        def test_if_not_peer_heartbeat_does_nothing(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.receive({'action': 'peer:beat' }, self.peer_address)
+
+            transport.sendto.assert_not_called()
+            assert self.peer_address not in p.peers
+
+        def test_if_peer_hearbeat_returns_ack(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.peers[self.peer_address] = {
+                'mutual?': False,
+            }
+            p.receive({'action': 'peer:beat' }, self.peer_address)
+
+            transport.sendto.assert_called_once_with(
+                b'{"action":"peer:ack-beat"}',
+                self.peer_address,
+            )
+
+        def test_heartbeat_sets_seen_utc(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.peers[self.peer_address] = {
+                'mutual?': False,
+            }
+            p.receive({'action': 'peer:beat' }, self.peer_address)
+
+            assert p.peers[self.peer_address]['seen-utc']
+
+        def test_if_not_peer_ack_beat_does_nothing(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.receive({'action': 'peer:ack-beat' }, self.peer_address)
+
+            transport.sendto.assert_not_called()
+            assert self.peer_address not in p.peers
+
+        def test_ack_beat_sets_seen_utc(self):
+            transport = Mock()
+
+            p = PeerProtocol(encoders.JsonEncoder())
+            p.connection_made(transport)
+            p.peers[self.peer_address] = {
+                'mutual?': False,
+            }
+            p.receive({'action': 'peer:ack-beat' }, self.peer_address)
+
+            assert p.peers[self.peer_address]['seen-utc']
 
     unittest.main()
